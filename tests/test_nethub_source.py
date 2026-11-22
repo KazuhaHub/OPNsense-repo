@@ -61,6 +61,20 @@ class NetHubSourceTests(unittest.TestCase):
             self.assertEqual(result['scripts'][phase].encode(), self.files[adapter.PLUGIN + '/packaging/freebsd/' + filename])
         self.assertFalse(result['generated_files_verified'])
 
+    def test_first_weekly_release_uses_two_component_version(self):
+        self.lock['tag'] = 'v2026.53'
+        self.lock['url'] = self.lock['url'].replace('/v1.2.3/', '/v2026.53/')
+        self.product['product_version'] = '2026.53'
+        self.files[adapter.PLUGIN + '/build.sh'] = b'VERSION=2026.53\n'
+        self.files[adapter.PLUGIN + '/src' + adapter.PRODUCT_PATH] = json.dumps(self.product).encode()
+        self.assertEqual(self.reconstruct()['version'], '2026.53')
+
+        invalid = {**self.lock, 'tag': 'v2027.53', 'url': self.lock['url'].replace('2026.53', '2027.53')}
+        with self.assertRaisesRegex(ValueError, 'versioned release tag'):
+            adapter.upstream.validate_lock(invalid)
+        with self.assertRaisesRegex(ValueError, 'versioned release tag'):
+            adapter.upstream.validate_lock({**self.lock, 'plugin': 'other/plugin'})
+
     def test_foreign_subtree_is_not_treated_as_nethub(self):
         self.lock['plugin'] = 'other/plugin'
         with self.assertRaisesRegex(ValueError, 'NetHub plugin subtree'):

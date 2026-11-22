@@ -1,6 +1,7 @@
 """Read a reviewed upstream release archive without executing or extracting it."""
 import argparse
 from contextlib import contextmanager
+from datetime import date
 import gzip
 import hashlib
 import io
@@ -28,6 +29,18 @@ def relative_path(value):
     return value
 
 
+def is_weekly_release_base(value):
+    """Match the first NetHub release of a UTC ISO week."""
+    match = re.fullmatch(r'([1-9][0-9]{3})\.([1-9][0-9]?)', value)
+    if not match:
+        return False
+    try:
+        date.fromisocalendar(int(match[1]), int(match[2]), 1)
+    except ValueError:
+        return False
+    return True
+
+
 def validate_lock(lock):
     """A digest is required even when the release URL contains a version tag."""
     if not isinstance(lock, dict) or set(lock) != LOCK_FIELDS:
@@ -36,7 +49,10 @@ def validate_lock(lock):
         raise ValueError('Upstream source lock values must be strings.')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', lock['repository']):
         raise ValueError('Upstream repository must be an owner/name pair.')
-    if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', lock['tag']):
+    legacy_tag = re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?', lock['tag'])
+    nethub_week = (lock['repository'] == 'KazuhaHub/nethub' and lock['plugin'] == 'agents/opnsense/plugin'
+                   and lock['tag'].startswith('v') and is_weekly_release_base(lock['tag'][1:]))
+    if not (legacy_tag or nethub_week):
         raise ValueError('Upstream source requires a versioned release tag.')
     if not re.fullmatch(r'[0-9a-f]{40}', lock['commit']):
         raise ValueError('Upstream source requires a full commit pin.')

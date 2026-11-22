@@ -90,9 +90,11 @@ def reconstruct(archive, lock):
         frp_version = source[PLUGIN + '/FRP_VERSION'].decode('ascii').strip()
     except (KeyError, UnicodeError) as error:
         raise ValueError('NetHub archive lacks complete package metadata or build inputs.') from error
-    if len(versions) != 1 or not re.fullmatch(rb'[0-9]+\.[0-9]+\.[0-9]+', versions[0]):
+    if len(versions) != 1 or not versions[0].isascii():
         raise ValueError('NetHub source declares no unambiguous package version.')
     version = versions[0].decode('ascii')
+    if not (re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version) or upstream.is_weekly_release_base(version)):
+        raise ValueError('NetHub source declares no unambiguous package version.')
     if (product.get('product_id') != 'os-nethub-agent' or manifest.get('name') != 'os-nethub-agent'
             or product.get('product_version') != version or manifest.get('version') != '@VERSION@'
             or manifest.get('abi') != '@ABI@' or manifest.get('arch') != '@ARCH@'
