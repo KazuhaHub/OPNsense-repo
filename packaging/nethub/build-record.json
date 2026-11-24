@@ -3,7 +3,7 @@
   "build_input_sha256": {
     "agents/opnsense/plugin/FRP_VERSION": "6b547f978572cedebe264765ca56d71e1e23e37e2ad90f491de182872a61b9c6",
     "agents/opnsense/plugin/build.py": "4c4da780ea9af69760c49c667ca5d2563b95fd835cbfb348c2605dfc9c958f83",
-    "agents/opnsense/plugin/build.sh": "58ebc6a536a2ad760eba115ee804ff2bd90c25249ed9b18ee18a9a700547b3a3",
+    "agents/opnsense/plugin/build.sh": "9d8a38dc5a93bba4cd10495e1dffa27368f87cd47f8bcd32e6415b8a4dd6fa5f",
     "agents/opnsense/plugin/frp-artifacts.json": "8886a0a1c3349ab398bacc7c899d1aea99bbf031458e9bc1db915bb5e675566e",
     "agents/opnsense/plugin/frp_artifact.py": "6623ba62b2de623831c48a21ce550e8323db5fc2dc987a7cf6e90a0ac1a20eec",
     "agents/opnsense/plugin/frpc-build/go.mod": "92f5f37f9eecc210e988d5e8cdf5d8fee17b8b5076968acbc45fcdff9652df82",
@@ -64,6 +64,6 @@
     "frpc-licenses/sigs.k8s.io/yaml@v1.3.0/LICENSE": "24653fd8a39354396da1a265d68316399edc39b1df48c5866d55f9f06484fa9a"
   },
   "schema_version": 1,
-  "source_archive_sha256": "944648e946d12e3f5649e0ba379f203234c180a308703efc3ece5705f6b1e60c",
-  "source_commit": "f5151a876ea69bd675b69f63744b8f63206d0365"
+  "source_archive_sha256": "9f5b3fd9d00e0ac63073d62644e0e8658f064f962b195e201484169faf485317",
+  "source_commit": "d347c529f7161e0a22733b99cb6c30291c71876c"
 }
