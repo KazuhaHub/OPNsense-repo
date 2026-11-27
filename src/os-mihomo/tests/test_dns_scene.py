@@ -395,6 +395,13 @@ class ScenePageTests(unittest.TestCase):
         self.assertIn("$('#dns_scope').prop('disabled', scene);", self.view)
         self.assertIn('id="dns_scene_inactive"', self.view)
 
+    def test_the_page_guesses_no_group_name(self):
+        # Group names belong to each subscription; the page must not assume any.
+        self.assertNotIn('guessSceneGroup', self.view)
+        for name in ('中国', '大陆', '🇨🇳', 'CN\\b', '.test(name)'):
+            self.assertNotIn(name, self.view)
+        self.assertIn("select.append($('<option>').val('')", self.view)
+
     def test_the_api_keeps_a_stored_scene_when_a_post_leaves_it_out(self):
         self.assertIn("if (isset($given['dns_scene'])) {\n            $payload['dns_scene'] = (string)$given['dns_scene'];",
                       self.api)

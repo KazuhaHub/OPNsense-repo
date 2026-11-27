@@ -230,27 +230,15 @@ $(function () {
         const select = $('#dns_scene_group').empty();
         const names = groups.slice();
         if (current && names.indexOf(current) < 0) { names.unshift(current); }
+        /* Group names belong to each subscription, so none is guessed: the
+           operator picks one, and an empty choice is refused on save. */
+        select.append($('<option>').val('').text('{{ lang._('Choose a proxy group') }}'));
         names.forEach(function (name) { select.append($('<option>').val(name).text(name)); });
-        select.val(current || null);
-        select.data('guessed', false);
+        select.val(current);
         select.selectpicker('refresh');
         $('#dns_scene_group_empty').toggle(names.length === 0);
     }
 
-    /* A first guess only when nothing is chosen, or the last choice was a
-       guess: a China group for the scene abroad, the first group otherwise.
-       The operator confirms it. */
-    function guessSceneGroup(scene) {
-        const select = $('#dns_scene_group');
-        if (select.val() && !select.data('guessed')) { return; }
-        const names = select.find('option').map(function () { return this.value; }).get();
-        const china = names.filter(function (name) { return /中国|大陆|回国|China|\bCN\b|🇨🇳/i.test(name); });
-        select.val(scene === 'abroad' && china.length ? china[0] : (names[0] || null));
-        select.data('guessed', true);
-        select.selectpicker('refresh');
-    }
-    /* Picked by hand from here on: a scene change no longer re-guesses it. */
-    $('#dns_scene_group').on('changed.bs.select', function () { $(this).data('guessed', false); });
 
     /* The values a scene set aside, put back when it is left before saving. */
     let sceneHeld = null;
@@ -276,7 +264,6 @@ $(function () {
         $('#dns_scope').prop('disabled', scene);
         $('#router_dns,#dns_override').prop('disabled', scene);
         $('#dns_scene_note,#dns_scene_group_row').toggle(scene);
-        if (scene) { guessSceneGroup($('#dns_scene').val()); }
         const editable = $('#dns_override').is(':checked') && !$('#router_dns').is(':checked');
         $('#dns_default,#dns_nameserver,#dns_proxy_nameserver').prop('disabled', !editable);
         /* With router DNS Mihomo asks Unbound, so answering every device
