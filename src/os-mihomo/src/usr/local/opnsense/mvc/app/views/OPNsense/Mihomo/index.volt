@@ -120,6 +120,15 @@ $(function () {
             });
             /* A store from before the setting existed answers every device. */
             $('#dns_scope').val(s.dns_scope || 'all');
+            /* A store from before scenes existed follows the subscription. */
+            $('#dns_scene').val(s.dns_scene || 'subscription');
+            sceneGroups(data.proxy_groups || [], s.dns_scene_group || '');
+            sceneHeld = null;
+            /* Stored beside switches it does not allow -- merge YAML
+               nameservers turn the override on -- the scene is not in force,
+               and saving with it chosen would put it back over them. */
+            $('#dns_scene_inactive').toggle(!!s.dns_scene && s.dns_scene !== 'subscription'
+                && ((s.dns_scope || 'all') !== 'captured' || !!s.router_dns || !!s.dns_override || !s.dns_scene_group));
             /* One from before the declaration existed has none. */
             $('#ipv6_clients_restricted').prop('checked', s.ipv6_clients_restricted === true);
             /* A stored value fills the box; the placeholder already shows the
@@ -215,7 +224,46 @@ $(function () {
     /* Whether the merge YAML sets Mihomo IPv6, as the page last loaded it. */
     let ipv6Overridden = false;
 
+    /* The groups the subscription offers, and a stored choice it no longer
+       has, kept visible so saving does not silently pick another. */
+    function sceneGroups(groups, current) {
+        const select = $('#dns_scene_group').empty();
+        const names = groups.slice();
+        if (current && names.indexOf(current) < 0) { names.unshift(current); }
+        /* Group names belong to each subscription, so none is guessed: the
+           operator picks one, and an empty choice is refused on save. */
+        select.append($('<option>').val('').text('{{ lang._('Choose a proxy group') }}'));
+        names.forEach(function (name) { select.append($('<option>').val(name).text(name)); });
+        select.val(current);
+        select.selectpicker('refresh');
+        $('#dns_scene_group_empty').toggle(names.length === 0);
+    }
+
+
+    /* The values a scene set aside, put back when it is left before saving. */
+    let sceneHeld = null;
+
     function updateDnsControls() {
+        /* A scene answers captured devices only and owns the upstream
+           servers, so it holds the switches that would touch Unbound or
+           replace its servers where the backend requires them. */
+        const scene = ($('#dns_scene').val() || 'subscription') !== 'subscription';
+        if (scene && sceneHeld === null) {
+            sceneHeld = {scope: $('#dns_scope').prop('value'), router: $('#router_dns').is(':checked'),
+                         override: $('#dns_override').is(':checked')};
+        } else if (!scene && sceneHeld !== null) {
+            $('#dns_scope').val(sceneHeld.scope);
+            $('#router_dns').prop('checked', sceneHeld.router);
+            $('#dns_override').prop('checked', sceneHeld.override);
+            sceneHeld = null;
+        }
+        if (scene) {
+            $('#dns_scope').val('captured');
+            $('#router_dns,#dns_override').prop('checked', false);
+        }
+        $('#dns_scope').prop('disabled', scene);
+        $('#router_dns,#dns_override').prop('disabled', scene);
+        $('#dns_scene_note,#dns_scene_group_row').toggle(scene);
         const editable = $('#dns_override').is(':checked') && !$('#router_dns').is(':checked');
         $('#dns_default,#dns_nameserver,#dns_proxy_nameserver').prop('disabled', !editable);
         /* With router DNS Mihomo asks Unbound, so answering every device
@@ -239,6 +287,8 @@ $(function () {
 
     $('#dns_override,#router_dns').on('change', updateDnsControls);
     $('#dns_scope').on('change', updateDnsControls);
+    $('#dns_scene').on('change', updateDnsControls);
+    $('#dns_scene').on('change', function () { $('#dns_scene_inactive').hide(); });
     $('#ipv6_clients_restricted,#ipv6').on('change', updateDnsControls);
 
     /* One entry can cover a whole segment, and a segment keeps covering it as
@@ -470,6 +520,8 @@ $(function () {
             device_mode: $('#device_mode').val(),
             /* .val() reads a choice router DNS greyed out as null. */
             dns_scope: $('#dns_scope').prop('value'),
+            dns_scene: $('#dns_scene').val(),
+            dns_scene_group: $('#dns_scene_group').val() || '',
             /* Sent apart from the flags: the controller keeps the stored
                declaration when a post leaves it out. */
             ipv6_clients_restricted: $('#ipv6_clients_restricted').is(':checked') ? 1 : 0,
@@ -842,6 +894,37 @@ $(function () {
                         &nbsp;&nbsp;
                     </td></tr></thead>
             <tbody>
+                <tr>
+                    <td><a id="help_for_dnsscene" href="#" class="showhelp"><i class="fa fa-info-circle"></i></a> {{ lang._('DNS scene') }}</td>
+                    <td>
+                        <select id="dns_scene" class="selectpicker" data-style="btn-default" data-width="320px">
+                            <option value="subscription">{{ lang._('Follow the subscription') }}</option>
+                            <option value="abroad">{{ lang._('Outside China, reaching China (回国)') }}</option>
+                            <option value="mainland">{{ lang._('Inside China, reaching abroad (出国)') }}</option>
+                        </select>
+                        <div id="dns_scene_inactive" class="text-warning" style="display:none">
+                            {{ lang._('This scene is not in force: the DNS scope, router DNS or Override subscription DNS was changed beside it, for example by nameservers in the merge YAML. Saving with the scene chosen turns them back and applies it, so merge YAML nameservers stop taking effect; choose Follow the subscription to keep them.') }}
+                        </div>
+                        <div id="dns_scene_note" class="text-info" style="display:none">
+                            {{ lang._('Only devices captured by transparent routing use this scene. The router DNS (Unbound) and every other device are left exactly as they are, so the DNS scope stays on captured devices, and router DNS and Override subscription DNS stay off.') }}
+                        </div>
+                        <div class="hidden" data-for="help_for_dnsscene">
+                            {{ lang._('Sets where Mihomo asks for DNS without editing the subscription. Only the DNS servers and their per-domain policy in the generated configuration change; proxies, proxy groups and rules are used exactly as the subscription states them. Outside China: Chinese names are asked of AliDNS and DNSPod through the group chosen below, normally the China node, and everything else of the router DNS, as for every other device. Inside China: Chinese names are asked of AliDNS and DNSPod directly, and everything else of Cloudflare through the group chosen below, normally the proxy. Local names and private ranges always go to the router DNS. A dns key in the merge YAML still wins. Follow the subscription changes nothing.') }}
+                        </div>
+                    </td>
+                </tr>
+                <tr id="dns_scene_group_row" style="display:none">
+                    <td><a id="help_for_dnsscenegroup" href="#" class="showhelp"><i class="fa fa-info-circle"></i></a> {{ lang._('DNS route') }}</td>
+                    <td>
+                        <select id="dns_scene_group" class="selectpicker" data-style="btn-default" data-width="320px" data-live-search="true"></select>
+                        <div id="dns_scene_group_empty" class="text-warning" style="display:none">
+                            {{ lang._('No proxy groups are known yet. Apply the subscription once, then reload this page.') }}
+                        </div>
+                        <div class="hidden" data-for="help_for_dnsscenegroup">
+                            {{ lang._('The proxy group the scene reaches the far side through: Chinese resolvers outside China, Cloudflare inside China. It follows whatever node the group is set to in the dashboard. The list is the groups of the subscription as last applied; a subscription update that drops the chosen group is refused until another is chosen.') }}
+                        </div>
+                    </td>
+                </tr>
                 <tr id="mihomo-orphans" style="display:none">
                     <td><i class="fa fa-exclamation-triangle text-warning"></i> {{ lang._('Unmatched DNS policy') }}</td>
                     <td><div class="alert alert-warning" style="margin-bottom:0">
