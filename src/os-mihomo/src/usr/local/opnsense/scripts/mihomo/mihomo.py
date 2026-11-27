@@ -57,6 +57,10 @@ DNSSEC_NOTE = ('Unbound validates DNSSEC, so its upstreams are left unchanged; '
 DNS_RESTART_NOTE = 'Unbound is not forwarding to Mihomo; restart the service to apply the DNS integration.'
 CAPTURED_DNSSEC_NOTE = ('Unbound validates DNSSEC for the other devices; captured devices asking the router '
                         'DNS are answered by Mihomo without validation.')
+SCENE_ROUTER_DNS_NOTE = ('The router DNS did not answer at 127.0.0.1:53. The DNS scene outside China asks it '
+                         'for every name that is not Chinese, so captured devices cannot resolve them, nor '
+                         'their local names. Make sure Unbound, or another resolver that does not forward to '
+                         'Mihomo, answers there, or choose another scene.')
 CAPTURED_WAIT_NOTE = ('Captured devices use the router DNS until the Mihomo DNS listener and the '
                       'firewall redirect hook are ready.')
 # Why the watchdog withdrew the captured-device redirect, by the reason its
@@ -934,7 +938,7 @@ BASELINE_DNS = {
 # the stored subscription is never rewritten. It sits ABOVE the subscription
 # and UNDER the merge YAML, so a hand-written dns key still wins. Every server
 # is addressed by literal IP, so nothing needs resolving before DNS works.
-# The far side's servers are reached through one proxy group the operator
+# Abroad, the near side is the router DNS itself. The far side's servers are reached through one proxy group the operator
 # names (dns_scene_group), pinned with #group, and the near side's with
 # #DIRECT, so no answer depends on how the subscription rules route a DNS
 # server's address: providers often pin 1.1.1.1 or 223.5.5.5 DIRECT.
@@ -955,12 +959,18 @@ def scene_dns(scene, group):
         # Outside mainland China, reaching Chinese services: Chinese names
         # are asked of Chinese resolvers through the group, normally a China
         # node, so the answers are the ones a client inside China would get.
-        # Everything else resolves directly.
-        return {'default-nameserver': ['1.1.1.1', '1.0.0.1'],
-                'proxy-server-nameserver': list(CLOUDFLARE_DOH),
-                'direct-nameserver': list(CLOUDFLARE_DOH),
+        # Nothing poisons DNS out here, so everything else is asked of the
+        # router DNS, with its cache, blocklists and local names, exactly as
+        # the devices that are not captured get it. A scene keeps Unbound off
+        # Mihomo (captured scope only), and the router's own queries never
+        # enter the tunnel, so this cannot loop.
+        return {'default-nameserver': [LOCAL_RESOLVER],
+                'proxy-server-nameserver': [LOCAL_RESOLVER],
+                'direct-nameserver': [LOCAL_RESOLVER],
                 'direct-nameserver-follow-policy': False,
-                'nameserver': pinned(CLOUDFLARE_DOH, 'DIRECT'),
+                # Pinned, so a merge YAML that turns respect-rules back on
+                # cannot send the router's loopback to a proxy.
+                'nameserver': pinned([LOCAL_RESOLVER], 'DIRECT'),
                 'nameserver-policy': {'geosite:private': ['system'], 'geosite:cn': pinned(CHINA_DOH, group)},
                 'respect-rules': False}
     if scene == 'mainland':
@@ -4157,7 +4167,8 @@ class Manager:
                     notes.append(IPV6_DNSSEC_NOTE)
                 notes.append(CAPTURED_DNSSEC_NOTE)
             if not settings.get('router_dns') and observed.get('router_dns_answered') is False:
-                notes.append(LOCAL_NAMES_NOTE)
+                notes.append(SCENE_ROUTER_DNS_NOTE if scene_active(settings) and settings['dns_scene'] == 'abroad'
+                             else LOCAL_NAMES_NOTE)
             if scene_active(settings) and self.scene_ipv6(settings):
                 notes.append(SCENE_IPV6_NOTE)
         if running and ipv6_restricted(settings):

@@ -90,7 +90,10 @@ class SceneRenderTests(unittest.TestCase):
 
     def test_each_scene_sends_its_far_side_through_the_group_and_its_near_side_direct(self):
         abroad, mainland = m.scene_dns('abroad', '🇨🇳 中国大陆'), m.scene_dns('mainland', '🚀 节点选择')
-        self.assertTrue(all(server.endswith('#DIRECT') for server in abroad['nameserver']))
+        # Abroad nothing poisons DNS: everything but Chinese names goes to the router DNS.
+        for key in ('default-nameserver', 'proxy-server-nameserver', 'direct-nameserver'):
+            self.assertEqual(['127.0.0.1'], abroad[key])
+        self.assertEqual(['127.0.0.1#DIRECT'], abroad['nameserver'])
         self.assertTrue(all(server.endswith('#🇨🇳 中国大陆') for server in abroad['nameserver-policy']['geosite:cn']))
         self.assertTrue(all(server.endswith('#DIRECT') for server in mainland['nameserver-policy']['geosite:cn']))
         self.assertTrue(all(server.endswith('#🚀 节点选择') for server in mainland['nameserver']))
@@ -297,6 +300,14 @@ class SceneSettingsTests(unittest.TestCase):
         self.request(dns_scene='subscription')
         self.assertIn('dns-on', self.system.events)
         self.assertEqual('all', self.manager.dispatch('status')['dns_scope'])
+
+    def test_a_silent_router_dns_is_reported_for_the_scene_outside_china(self):
+        self.captured_with('abroad')
+        observed = json.loads(self.manager.dns_scope_file.read_bytes())
+        m.atomic_write(self.manager.dns_scope_file, json.dumps(dict(observed, router_dns_answered=False)).encode())
+        note = self.manager.dispatch('status')['dns_note']
+        self.assertIn(m.SCENE_ROUTER_DNS_NOTE, note)
+        self.assertNotIn(m.LOCAL_NAMES_NOTE, note)
 
     def test_a_prefix_that_arrives_after_the_start_is_noted_without_a_restart(self):
         self.captured_with('mainland')
