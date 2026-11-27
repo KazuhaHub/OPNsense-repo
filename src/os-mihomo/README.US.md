@@ -93,6 +93,20 @@ If anything goes wrong, the redirect is withdrawn and captured devices return to
 
 Downgrading to 1.4.x withdraws the redirect when the old package suspends the service, and 1.4.x then answers every device through Mihomo again whenever router DNS is off and the full preset is in use.
 
+## DNS scenes
+
+**DNS scene** (setting `dns_scene`, at the top of the DNS tab) states once where the router is deployed, instead of in the subscription. It replaces only the upstream servers and their per-domain policy in the generated configuration: `default-nameserver`, `proxy-server-nameserver`, `direct-nameserver`, `nameserver`, `nameserver-policy` and `respect-rules`, and it drops the subscription's `fallback`. Proxies, proxy groups and rules are used exactly as the subscription states them, and the stored subscription is never rewritten. The scene sits above the subscription and under the merge YAML, so a `dns` key the merge YAML states still wins; the route group is checked after the merge YAML, so a group it adds can be chosen. Every server is addressed by IP, so nothing has to resolve before DNS works. The far side's servers are reached through the proxy group chosen as **DNS route** (`#group` after the address) and the near side's are pinned direct (`#DIRECT`), so nothing depends on how the subscription rules route a DNS server's address: many providers pin 1.1.1.1 or 223.5.5.5 DIRECT. The route list is the subscription's groups as last applied; a subscription update that no longer has the chosen group is refused and the running configuration is kept until another group is chosen.
+
+| Scene | Chinese names (`geosite:cn`) | Every other name |
+|---|---|---|
+| Follow the subscription (default) | Unchanged | Unchanged |
+| Outside China, reaching China | AliDNS and DNSPod over DoH, through the chosen group, normally the China node, so the answers match what a client in China gets | Cloudflare over DoH, directly |
+| Inside China, reaching abroad | AliDNS and DNSPod over DoH, directly | Cloudflare over DoH, through the chosen group, normally the proxy, so the answer is not poisoned |
+
+Both scenes turn `respect-rules` off. `geosite:private` and the router's local names go to the router DNS; should the merge YAML turn `respect-rules` back on, local names are pinned direct, so no rule can send them into a proxy.
+
+**A scene serves captured devices only and never touches Unbound.** With a scene chosen, the DNS scope is held at only devices captured by transparent routing, and **Resolve through router DNS** and **Override subscription DNS** stay off. The page locks the three, and a save refuses any other combination. A scene left beside other values -- the old page after a downgrade, a restored backup that does not suit it (a restore sets it back to follow the subscription), or merge YAML nameservers, which turn on Override subscription DNS -- raises no error: it is simply not in force, the status says why, and saving the DNS tab again applies it. Unbound's configuration, upstreams, blocklists and local names stay as they are, and devices that are not captured keep using the router DNS. When captured devices get IPv6 addresses while Mihomo IPv6 is off, a scene does not fall back to all devices as a plain captured scope does; the status notes it instead, looking at most every 30 seconds, so a prefix that arrives after boot is noted too. Give captured devices no IPv6, or turn on Mihomo IPv6.
+
 ## Resolve through router DNS
 
 This switch defaults off. It supplies exactly these DNS keys before the local merge:

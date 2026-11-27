@@ -69,7 +69,9 @@ class SettingsController extends ApiControllerBase
             'has_url' => ($this->stored()['subscription_url'] ?? '') !== '',
             'effective_dns' => $this->effectiveDns(),
             'overrides' => $this->fromStatus('overrides'),
-            'policy_orphans' => $this->warnings(),
+            'policy_orphans' => $this->warnings('policy_orphans'),
+            /* What the DNS scene route may name, as the last apply read it. */
+            'proxy_groups' => $this->warnings('proxy_groups'),
             'presets' => $this->presets(),
             'dashboard' => $this->dashboardUrl(),
             'merge' => (string)@file_get_contents(self::STATE . '/merge.yaml'),
@@ -102,6 +104,14 @@ class SettingsController extends ApiControllerBase
            of silently widening a captured router to every device. */
         if (isset($given['dns_scope'])) {
             $payload['dns_scope'] = (string)$given['dns_scope'];
+        }
+        /* Nor has the DNS scene: a page from before it existed keeps the
+           stored scene, whose companion switches the backend checks. */
+        if (isset($given['dns_scene'])) {
+            $payload['dns_scene'] = (string)$given['dns_scene'];
+        }
+        if (isset($given['dns_scene_group'])) {
+            $payload['dns_scene_group'] = (string)$given['dns_scene_group'];
         }
         /* Nor has the declaration that captured devices get no IPv6: without
            the key the stored answer stands, and nothing stored means off. It
@@ -194,11 +204,11 @@ class SettingsController extends ApiControllerBase
         return is_array($status) && is_array($status[$key] ?? null) ? $status[$key] : [];
     }
 
-    private function warnings(): array
+    private function warnings(string $key): array
     {
         $raw = @file_get_contents(self::STATE . '/warnings.json');
         $value = is_string($raw) ? json_decode($raw, true) : null;
-        return is_array($value) && is_array($value['policy_orphans'] ?? null) ? $value['policy_orphans'] : [];
+        return is_array($value) && is_array($value[$key] ?? null) ? array_values($value[$key]) : [];
     }
 
     private function presets(): array

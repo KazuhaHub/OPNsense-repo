@@ -52,6 +52,10 @@
         <!-- Absent from a backup taken before the setting existed; the import
              then keeps the scope the restored box already has. -->
         <dns_scope type="TextField"/>
+        <!-- Absent from a backup taken before the setting existed; the import
+             then keeps the scene the restored box already has. -->
+        <dns_scene type="TextField"/>
+        <dns_scene_group type="TextField"/>
         <dns_override type="TextField"/>
         <tcp_redirect type="TextField"/>
         <!-- Absent from a backup taken before the setting existed; the import

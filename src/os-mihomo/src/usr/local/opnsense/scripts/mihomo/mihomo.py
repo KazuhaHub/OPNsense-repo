@@ -35,7 +35,8 @@ from dns_scope import (DNS_LISTEN, DNS_PORT, DNS_SCOPE_DEFAULT, DNS_SCOPE_FRESH,
                        IPV6_DNSSEC_NOTE, IPV6_NOTE, IPV6_POLL, IPV6_RESTRICTED_ALL_NOTE, IPV6_RESTRICTED_NOTE,
                        IPV6_ROUTER_DNS_NOTE, PRESET_NOTE, ROUTER_DNS_NOTE, SCOPE_CHANGE_INTERVAL, carries_ipv6,
                        effective_dns_scope, global_ipv6, interface_ipv6, ipv6_matters, ipv6_restricted,
-                       reach_verdict, retry_delay)
+                       SCENE_INACTIVE_NOTE, SCENE_IPV6_NOTE, reach_verdict, retry_delay, scene_active,
+                       scene_chosen)
 from process_owner import (OwnershipError, REDIRECT_LISTENER, REDIRECT_PORT, core_group,
                            valid_identity, watch_group)
 
@@ -47,7 +48,7 @@ BACKUP_KEYS = ('subscription_url', 'secret', 'device', 'service_enabled', 'trans
                'dns_scope', 'dns_override', 'ipv6', 'geo_source', 'dns_default', 'dns_nameserver',
                'dns_proxy_nameserver',
                'device_mode', 'device_list', 'capture_interfaces', 'controller', 'tcp_redirect',
-               'ipv6_clients_restricted')
+               'ipv6_clients_restricted', 'dns_scene', 'dns_scene_group')
 BACKUP_WARNING = 'The operation completed, but the Mihomo configuration backup could not be updated.'
 BACKUP_INTEGRITY_WARNING = ('The saved Mihomo backup checksum does not match. The current local configuration is retained. '
                             'Stop the service and use Repair saved backup to validate and import the edited backup.')
@@ -927,6 +928,129 @@ BASELINE_DNS = {
 }
 
 
+# DNS scenes: where the router is deployed, stated once instead of in the
+# subscription. A scene replaces only the upstream servers and their policy in
+# the generated configuration; proxies, groups and rules are never touched, and
+# the stored subscription is never rewritten. It sits ABOVE the subscription
+# and UNDER the merge YAML, so a hand-written dns key still wins. Every server
+# is addressed by literal IP, so nothing needs resolving before DNS works.
+# The far side's servers are reached through one proxy group the operator
+# names (dns_scene_group), pinned with #group, and the near side's with
+# #DIRECT, so no answer depends on how the subscription rules route a DNS
+# server's address: providers often pin 1.1.1.1 or 223.5.5.5 DIRECT.
+DNS_SCENE_DEFAULT = 'subscription'
+CLOUDFLARE_DOH = ('https://1.1.1.1/dns-query', 'https://1.0.0.1/dns-query')
+CHINA_DOH = ('https://223.5.5.5/dns-query', 'https://120.53.53.53/dns-query')
+DNS_SCENES = ('subscription', 'abroad', 'mainland')
+SCENE_GROUP_LIMIT = 128
+
+
+def pinned(servers, route):
+    return [server + '#' + route for server in servers]
+
+
+def scene_dns(scene, group):
+    """The upstream keys of a scene, its far side reached through group; None for the subscription."""
+    if scene == 'abroad':
+        # Outside mainland China, reaching Chinese services: Chinese names
+        # are asked of Chinese resolvers through the group, normally a China
+        # node, so the answers are the ones a client inside China would get.
+        # Everything else resolves directly.
+        return {'default-nameserver': ['1.1.1.1', '1.0.0.1'],
+                'proxy-server-nameserver': list(CLOUDFLARE_DOH),
+                'direct-nameserver': list(CLOUDFLARE_DOH),
+                'direct-nameserver-follow-policy': False,
+                'nameserver': pinned(CLOUDFLARE_DOH, 'DIRECT'),
+                'nameserver-policy': {'geosite:private': ['system'], 'geosite:cn': pinned(CHINA_DOH, group)},
+                'respect-rules': False}
+    if scene == 'mainland':
+        # Inside mainland China, reaching the rest of the world: Chinese names
+        # resolve directly at Chinese resolvers, and every other name is asked
+        # of Cloudflare through the group, normally the proxy, so the answer
+        # is neither poisoned nor seen on the way.
+        return {'default-nameserver': ['223.5.5.5', '119.29.29.29'],
+                'proxy-server-nameserver': list(CHINA_DOH),
+                'direct-nameserver': list(CHINA_DOH),
+                'direct-nameserver-follow-policy': False,
+                'nameserver': pinned(CLOUDFLARE_DOH, group),
+                'nameserver-policy': {'geosite:private': ['system'], 'geosite:cn': pinned(CHINA_DOH, 'DIRECT')},
+                'respect-rules': False}
+    return None
+
+
+# Upstream keys a scene owns. A subscription value for one the scene does not
+# state is dropped as well, because half of one policy and half of another
+# resolves neither correctly.
+SCENE_DNS_KEYS = ('default-nameserver', 'proxy-server-nameserver', 'direct-nameserver',
+                  'direct-nameserver-follow-policy', 'nameserver', 'nameserver-policy',
+                  'fallback', 'fallback-filter', 'respect-rules')
+
+
+def check_scene_group(value):
+    """A proxy group name as it may follow # in a DNS server address."""
+    if (not isinstance(value, str) or len(value) > SCENE_GROUP_LIMIT or value != value.strip()
+            or any(char in value for char in '#&=%\r\n\t\x00')):
+        raise Error('The DNS scene route must be a proxy group name without #, &, =, % or line breaks.')
+
+
+SCENE_COMPANIONS = ('dns_scene', 'dns_scene_group', 'dns_scope', 'router_dns', 'dns_override')
+
+
+def check_scene_save(settings):
+    """Refuse saving a scene beside a switch that would touch Unbound or replace its servers.
+
+    Only a save states this intent; settings read back are never refused for
+    it (see scene_active()).
+    """
+    if not scene_chosen(settings):
+        return
+    if not settings.get('dns_scene_group'):
+        raise Error('A DNS scene needs the proxy group its far side is reached through. '
+                    'If the list is empty, apply the subscription first.')
+    if settings.get('dns_scope', DNS_SCOPE_DEFAULT) != 'captured':
+        raise Error('A DNS scene requires the DNS scope "Only devices captured by transparent routing".')
+    if settings.get('router_dns'):
+        raise Error('A DNS scene replaces the upstream servers, so router DNS must be off.')
+    if settings.get('dns_override'):
+        raise Error('A DNS scene replaces the upstream servers, so Override subscription DNS must be off.')
+
+
+def proxy_names(data):
+    """Every name a DNS server may be pinned to: the subscription's groups and proxies, and DIRECT."""
+    names = ['DIRECT']
+    for key in ('proxy-groups', 'proxies'):
+        for entry in data.get(key) or []:
+            if isinstance(entry, dict) and isinstance(entry.get('name'), str) and entry['name'] not in names:
+                names.append(entry['name'])
+    return names
+
+
+def proxy_groups(data):
+    """The subscription's proxy group names, in order, for the page to offer."""
+    return [entry['name'] for entry in data.get('proxy-groups') or []
+            if isinstance(entry, dict) and isinstance(entry.get('name'), str)]
+
+
+def apply_scene(result, settings):
+    """Replace the upstream servers of a merged subscription with the chosen scene's.
+
+    Only the scene's DNS keys change. nameserver-policy is replaced as a
+    whole rather than deep-merged, so no provider entry survives beside it.
+    A scene that is not in force (scene_active()) changes nothing.
+    """
+    if not scene_active(settings):
+        return result
+    scene, group = settings['dns_scene'], settings['dns_scene_group']
+    result = dict(result)
+    dns = dict(result['dns']) if isinstance(result.get('dns'), dict) else {}
+    for key in SCENE_DNS_KEYS:
+        dns.pop(key, None)
+    dns.setdefault('enable', True)
+    dns.update(scene_dns(scene, group))
+    result['dns'] = dns
+    return result
+
+
 def baseline(data):
     """Fill in what the subscription leaves out, and nothing it states itself."""
     result = {}
@@ -1025,7 +1149,7 @@ SWITCH_DEFAULTS = {'router_dns': False, 'dns_override': False, 'ipv6': False, 'd
                    'dns_mode': DNS_MODE_DEFAULT, 'geo_source': GEO_SOURCE_DEFAULT,
                    'mixed_port': 7890, 'socks_port': 7891, 'allow_lan': False,
                    'bind_address': '127.0.0.1', 'tun_stack': 'gvisor', 'tun_mtu': 1420,
-                   'dns_scope': DNS_SCOPE_DEFAULT}
+                   'dns_scope': DNS_SCOPE_DEFAULT, 'dns_scene': DNS_SCENE_DEFAULT, 'dns_scene_group': ''}
 # Bumped only to re-seed the switches from an installation that predates them.
 # A new key that SWITCH_DEFAULTS fills in needs no bump: re-seeding would also
 # turn dns_override back on for every router with a manual DNS field.
@@ -1268,7 +1392,7 @@ def redirect_conflict(result):
 def render(data, settings, transparent=None, overlay=None, upstreams='', ipv6_advertised=False, local_names=()):
     # ipv6_advertised is the IPv6 offer under router DNS, and otherwise the
     # answer a captured scope is decided with (Manager.start_context()).
-    result = merge_yaml(baseline(data), data)
+    result = apply_scene(merge_yaml(baseline(data), data), settings)
     router_dns = settings.get('router_dns', False)
     if router_dns:
         result = merge_yaml(result, {'dns': {
@@ -1282,6 +1406,12 @@ def render(data, settings, transparent=None, overlay=None, upstreams='', ipv6_ad
         if settings.get('controller'):
             overlay['external-controller'] = settings['controller']
     result = merge_yaml(result, overlay)
+    # The core accepts a server pinned to a group it does not have and fails
+    # every query sent there, so a route the final configuration lacks --
+    # after the merge YAML, which may replace the groups -- is refused by name.
+    if scene_active(settings) and settings['dns_scene_group'] not in proxy_names(result):
+        raise Error('The DNS scene routes through "%s", which the configuration does not have. '
+                    'Choose another group on the DNS tab.' % settings['dns_scene_group'])
     enabled = settings["transparent"] if transparent is None else transparent
     dns = result.get("dns", {})
     if not isinstance(dns, dict):
@@ -2808,6 +2938,7 @@ class Manager:
         # settings and the applied configuration, for the routing adapter and
         # every later status to decide the scope exactly as that start did.
         self.dns_scope_file = self.state / 'dns-scope.json'
+        self.scene_ipv6_file = self.state / 'scene-ipv6.json'
         # A watchdog scope change that has begun and not yet ended in a started
         # service: its stop may have run and its start may have written the
         # forward zone before the status says so.
@@ -2840,6 +2971,8 @@ class Manager:
         self._applied_dns = None
         self._ipv6_offer = None
         self._validating = None
+        # (when, answer) of the last look at IPv6 reaching a scene's devices.
+        self._scene_ipv6 = None
         self._routing_context = None
         # The watchdog's look at IPv6 reaching captured devices: when it last
         # looked, what at, how many looks in a row disagree with the scope in
@@ -3161,13 +3294,19 @@ class Manager:
                     fallback = settings.get(field, [] if field in (*DNS_SERVER_FIELDS, 'device_list', 'capture_interfaces') else
                                             'off' if field == 'device_mode'
                                             else False if field in ('tcp_redirect', 'ipv6_clients_restricted')
-                                            else DNS_SCOPE_DEFAULT if field == 'dns_scope' else LOOPBACK_CONTROLLER)
+                                            else DNS_SCOPE_DEFAULT if field == 'dns_scope'
+                                            else DNS_SCENE_DEFAULT if field == 'dns_scene'
+                                            else '' if field == 'dns_scene_group' else LOOPBACK_CONTROLLER)
                     decoded = json.loads(stored[field]) if not isinstance(fallback, str) else self._backup_text(stored[field])
                     if isinstance(fallback, bool) and type(decoded) is int and decoded in (0, 1):
                         decoded = bool(decoded)
                     if type(decoded) is not type(fallback):
                         raise ValueError()
                     settings[field] = decoded
+                # A backup from before scenes keeps the box's scene beside its
+                # own DNS switches; one they leave out of force is dropped.
+                if scene_chosen(settings) and not scene_active(settings):
+                    settings['dns_scene'] = DNS_SCENE_DEFAULT
                 settings.update(transparent=False, transparent_consent=False,
                                 state_schema=STATE_SCHEMA, switch_schema=SWITCH_SCHEMA)
                 self.check_settings(settings)
@@ -3197,6 +3336,11 @@ class Manager:
                 data = parse_yaml(source) if source is not None else {'proxies': [], 'proxy-groups': [], 'rules': ['MATCH,DIRECT']}
                 if source is not None:
                     check_subscription(data)
+                # Nor is a scene kept whose route the restored configuration lacks.
+                if (scene_active(settings) and settings['dns_scene_group']
+                        not in proxy_names(merge_yaml(merge_yaml(baseline(data), data), overlay))):
+                    settings['dns_scene'] = DNS_SCENE_DEFAULT
+                    pending[self.settings_file] = (json.dumps(settings, indent=2) + '\n').encode()
                 journals = {}
                 scope = stored.get('consent_scope', '')
                 if scope and not re.fullmatch('[a-f0-9]{64}', scope):
@@ -3290,7 +3434,7 @@ class Manager:
                     (self.path(HOME) / 'cache.db').unlink(missing_ok=True)
                     self.backup_warning_file.unlink(missing_ok=True)
                     self.proxy_warning_file.unlink(missing_ok=True)
-                    self.record_warnings(data, overlay)
+                    self.record_warnings(data, overlay, settings)
                     self.publish_status(settings)
                 except (Error, OSError, ValueError):
                     result['warning'] = 'The Mihomo configuration was restored, but its derived status could not be refreshed.'
@@ -3422,6 +3566,10 @@ class Manager:
         # every earlier release accepted still load, restore and save.
         if settings.get('dns_scope', DNS_SCOPE_DEFAULT) not in DNS_SCOPES:
             raise Error('The DNS scope must be one of: ' + ', '.join(DNS_SCOPES) + '.')
+        scene = settings.get('dns_scene', DNS_SCENE_DEFAULT)
+        if scene not in DNS_SCENES:
+            raise Error('The DNS scene must be one of: ' + ', '.join(DNS_SCENES) + '.')
+        check_scene_group(settings.get('dns_scene_group', ''))
         device_networks(settings.get('device_list'))
         capture_interfaces(settings.get('capture_interfaces'))
         if not isinstance(settings.get("secret"), str) or not settings["secret"]:
@@ -4010,8 +4158,12 @@ class Manager:
                 notes.append(CAPTURED_DNSSEC_NOTE)
             if not settings.get('router_dns') and observed.get('router_dns_answered') is False:
                 notes.append(LOCAL_NAMES_NOTE)
+            if scene_active(settings) and self.scene_ipv6(settings):
+                notes.append(SCENE_IPV6_NOTE)
         if running and ipv6_restricted(settings):
             notes.append(self.restricted_note(settings, dns_scope))
+        if scene_chosen(settings) and not scene_active(settings):
+            notes.append(SCENE_INACTIVE_NOTE)
         dns_note = ' '.join(note for note in notes if note)
         # An automatic restart that waits, or that the budget refused, is said
         # until a start or a stop ends it, whoever republishes meanwhile. A
@@ -4068,6 +4220,34 @@ class Manager:
                       if self.proxy_warning_file.exists() else '', "updated": time.time()}
         atomic_write(self.status_file, json.dumps(status).encode(), 0o644)
         return status
+
+    def scene_ipv6(self, settings):
+        """Whether IPv6 that Mihomo does not carry reaches the devices a scene answers.
+
+        A scene never widens to every device, so the watchdog never looks for
+        it; the status asks here instead, at most once every IPV6_POLL seconds,
+        so a prefix that arrives after boot is noted without a restart.
+        DNSSEC has no bearing on it, unlike the captured scope's fallback.
+        """
+        shape = self.applied_dns_shape()
+        if shape is None or carries_ipv6(shape) or ipv6_restricted(settings):
+            return False
+        now = self.clock()
+        cached = self._scene_ipv6
+        if cached is None:
+            # Every status request is a new process, so the answer is kept
+            # where the next one finds it; the monotonic clock is system-wide.
+            with contextlib.suppress(OSError, ValueError, TypeError):
+                stored = json.loads(self.scene_ipv6_file.read_bytes())
+                if type(stored.get('at')) in (int, float) and isinstance(stored.get('reaching'), bool):
+                    cached = (stored['at'], stored['reaching'])
+        if cached is not None and 0 <= now - cached[0] < IPV6_POLL:
+            return cached[1]
+        answer = bool(self.ipv6_reaching(settings))
+        self._scene_ipv6 = (now, answer)
+        with contextlib.suppress(OSError):
+            atomic_write(self.scene_ipv6_file, json.dumps({'at': now, 'reaching': answer}).encode())
+        return answer
 
     def restricted_note(self, settings, dns_scope):
         """What the declaration that captured devices get no IPv6 does in the running service, or ''.
@@ -4241,12 +4421,14 @@ class Manager:
                 and (node.findtext('enabled') == '1' or snapshot.get('roots', {}).get(node.get('uuid')) == '1'))
         return upstreams, advertises_ipv6(config)
 
-    def record_warnings(self, data, overlay=None):
+    def record_warnings(self, data, overlay=None, settings=None):
         """Publish what the applied configuration silently did not do."""
         if overlay is None:
             overlay = parse_yaml(self.merge_file.read_bytes()) if self.merge_file.exists() else {}
-        orphans = orphan_policy_keys(merge_yaml(baseline(data), data), overlay)
-        atomic_write(self.warnings_file, json.dumps({'policy_orphans': orphans}).encode(), 0o644)
+        base = apply_scene(merge_yaml(baseline(data), data), settings if settings is not None else self.settings())
+        orphans = orphan_policy_keys(base, overlay)
+        atomic_write(self.warnings_file, json.dumps({'policy_orphans': orphans,
+                                                     'proxy_groups': proxy_groups(data)}).encode(), 0o644)
 
     def local_names(self, settings):
         """The router's local names, for a captured scope without router DNS only.
@@ -4388,7 +4570,7 @@ class Manager:
                 atomic_write(self.config_file, candidate.read_bytes())
             finally:
                 candidate.unlink(missing_ok=True)
-            self.record_warnings(data)
+            self.record_warnings(data, settings=settings)
             tun = bool(generated.get('tun', {}).get('enable'))
             # Only 'all' asks Unbound to forward. A captured scope leaves it
             # alone and is reached by the routing redirect; 'off' leaves it
@@ -4501,7 +4683,7 @@ class Manager:
                 self.write_settings(settings)
                 if overlay is not None:
                     atomic_write(self.merge_file, yaml.safe_dump(overlay, sort_keys=False, allow_unicode=True).encode())
-                self.record_warnings(data, overlay)
+                self.record_warnings(data, overlay, settings)
                 if running:
                     self.start(settings)
                 else:
@@ -5418,9 +5600,13 @@ class Manager:
                         'router_dns', 'dns_scope', 'dns_override', 'ipv6', 'dns_hijack', 'dns_mode', 'geo_source',
                         'device_mode', 'device_list', 'capture_interfaces', 'mixed_port', 'socks_port',
                         'allow_lan', 'bind_address', 'tun_stack', 'tun_mtu', 'tcp_redirect',
-                        'ipv6_clients_restricted', *DNS_SERVER_FIELDS):
+                        'ipv6_clients_restricted', 'dns_scene', 'dns_scene_group', *DNS_SERVER_FIELDS):
                 if key in value:
                     settings[key] = value[key]
+            # Only a post that states the scene or a switch beside it decides
+            # the combination; any other leaves a scene out of force as it is.
+            if any(key in value for key in SCENE_COMPANIONS):
+                check_scene_save(settings)
             if settings.get('tcp_redirect') is True and any(
                     key in value and settings.get(key) == REDIRECT_PORT for key in ('mixed_port', 'socks_port')):
                 raise Error('Port %d is used by the transparent TCP listener, so the mixed and SOCKS ports '

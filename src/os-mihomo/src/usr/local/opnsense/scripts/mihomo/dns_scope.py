@@ -43,6 +43,16 @@ PRESET_NOTE = ('Mihomo DNS does not listen on %s in the generated configuration,
 IPV6_RESTRICTED_NOTE = ('This router offers devices IPv6 while Mihomo IPv6 is off. That is allowed because '
                         '"IPv6 only for uncaptured devices" declares that captured devices get no IPv6; the '
                         'plugin does not check it.')
+# A DNS scene answers captured devices only and never widens to every device,
+# which would hand the router DNS to Mihomo for devices that do not use it.
+SCENE_IPV6_NOTE = ('This router gives devices on a captured interface IPv6 addresses while Mihomo IPv6 is '
+                   'off. The DNS scene keeps answering only captured devices, so a captured device asking '
+                   'the router DNS over IPv6 gets IPv6 answers from Unbound and can leave the tunnel over '
+                   'IPv6. Give captured devices no IPv6, or turn on Mihomo IPv6.')
+SCENE_INACTIVE_NOTE = ('The DNS scene is not in force: it needs the DNS scope "Only devices captured by '
+                       'transparent routing", router DNS and Override subscription DNS off, and a DNS route. '
+                       'A merge YAML that states nameservers turns the override on. Save the DNS tab again '
+                       'to apply the scene, or choose Follow the subscription.')
 IPV6_RESTRICTED_ALL_NOTE = ('"IPv6 only for uncaptured devices" is on, but Mihomo answers every device without '
                             'IPv6 answers, so the devices given IPv6 get no AAAA records from the router DNS '
                             'either. Choose "Only devices captured by transparent routing" or "No devices", or '
@@ -77,6 +87,26 @@ def ipv6_restricted(settings):
     return settings.get('ipv6_clients_restricted') is True
 
 
+def scene_chosen(settings):
+    """Whether a DNS scene other than following the subscription is stored."""
+    return settings.get('dns_scene', 'subscription') != 'subscription'
+
+
+def scene_active(settings):
+    """Whether the stored DNS scene is in force.
+
+    Only beside the switches it requires: a captured scope, router DNS and
+    Override subscription DNS off, and a route. Saving through the page or
+    settings/set refuses anything else, but a downgrade and upgrade, a merge
+    YAML whose servers turn the override on, or a restore can still leave a
+    scene beside them; it then simply does nothing, and the status says so,
+    rather than making the settings unreadable.
+    """
+    return (scene_chosen(settings) and settings.get('dns_scope', DNS_SCOPE_DEFAULT) == 'captured'
+            and not settings.get('router_dns') and not settings.get('dns_override')
+            and bool(settings.get('dns_scene_group')))
+
+
 def carries_ipv6(generated):
     """Whether a generated configuration has Mihomo carry IPv6 and answer AAAA."""
     dns = generated.get('dns') if isinstance(generated.get('dns'), dict) else {}
@@ -97,7 +127,8 @@ def effective_dns_scope(settings, generated, ipv6_reaching=False):
     router, held as a global address by an interface transparent routing
     captures, and not while Unbound validates DNSSEC, which declines 'all'.
     An administrator who declared that captured devices get no IPv6
-    (ipv6_restricted()) has no fallback, whatever an answer says.
+    (ipv6_restricted()) has no fallback, whatever an answer says, and neither
+    has a DNS scene (scene_active()), which only notes the offer.
     """
     tun = generated.get('tun') if isinstance(generated.get('tun'), dict) else {}
     dns = generated.get('dns') if isinstance(generated.get('dns'), dict) else {}
@@ -107,6 +138,10 @@ def effective_dns_scope(settings, generated, ipv6_reaching=False):
     scope, note = chosen, ''
     if (scope == 'captured' and ipv6_reaching and not ipv6_restricted(settings)
             and not carries_ipv6(generated)):
+        # A scene never touches Unbound, so it stays; the status notes the
+        # offer instead (SCENE_IPV6_NOTE).
+        if scene_active(settings):
+            return scope, note
         scope, note = 'all', IPV6_NOTE
     if scope == 'all' and settings.get('router_dns'):
         # Router DNS refuses to start while IPv6 is offered, and a declared
